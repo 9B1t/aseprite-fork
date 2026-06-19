@@ -3,15 +3,24 @@ name: build-release
 on:
   push:
     tags:
-      - "v*"
+      - 'v*'
 
 permissions:
   contents: write
 
 jobs:
-  release:
+  build:
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        ui: [gui, cli]
+        scripting: [lua, noscripts]
+        exclude:
+          - ui: gui
+            scripting: noscripts
 
     steps:
     - uses: actions/checkout@v4
@@ -19,12 +28,12 @@ jobs:
         submodules: 'recursive'
 
     - name: Install Skia
+      if: ${{ matrix.ui == 'gui' }}
       shell: bash
       run: |
         this_dir=$(cygpath "${{ github.workspace }}")
         skia_url=$(source $this_dir/laf/misc/skia-url.sh | xargs)
         skia_file=$(basename $skia_url)
-
         curl --ssl-revoke-best-effort -L -o "$skia_file" "$skia_url"
         unzip "$skia_file" -d skia
 
@@ -35,31 +44,57 @@ jobs:
     - name: Generating Makefiles
       shell: bash
       run: |
-        cmake -S . -B build -G Ninja \
-          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-          -DENABLE_TESTS=OFF \
-          -DENABLE_SCRIPTING=ON \
-          -DENABLE_CCACHE=OFF \
-          -DLAF_BACKEND=skia \
-          -DSKIA_DIR=$(realpath skia) \
-          -DSKIA_LIBRARY_DIR=$(realpath skia/out/Release-x64)
+        export enable_ccache=off
 
-    - name: Build
+        if [[ "${{ matrix.ui }}" == "gui" ]] ; then
+          export laf_backend=skia
+        else
+          export laf_backend=none
+        fi
+
+        if [[ "${{ matrix.scripting }}" == "lua" ]] ; then
+          export enable_scripting=on
+        else
+          export enable_scripting=off
+        fi
+
+        export skia_arch=x64
+
+        cmake -S . -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=10.14 \
+          -DENABLE_TESTS=ON \
+          -DENABLE_SCRIPTING=$enable_scripting \
+          -DENABLE_CCACHE=$enable_ccache \
+          -DLAF_BACKEND=$laf_backend \
+          -DSKIA_DIR=$(realpath skia) \
+          -DSKIA_LIBRARY_DIR=$(realpath skia/out/Release-$skia_arch)
+
+    - name: Compiling
       shell: bash
       run: |
-        cd build
-        ninja
+        cd build && ninja
+
+    - name: Running C++ Tests
+      shell: bash
+      run: |
+        cd build && ctest --output-on-failure
+
+    - name: Running CLI Tests
+      if: ${{ matrix.scripting == 'lua' }}
+      shell: bash
+      run: |
+        export ASEPRITE=$PWD/build/bin/aseprite
+        cd tests
+        bash run-tests.sh
 
     - name: Package
       shell: bash
       run: |
-        mkdir release
-        cp build/bin/aseprite.exe release/
-        7z a aseprite-windows.zip release/*
+        mkdir -p dist
+        7z a dist/aseprite-${{ github.ref_name }}-${{ matrix.ui }}-${{ matrix.scripting }}-windows.zip ./build/bin/*
 
-    - name: Upload to GitHub Release
+    - name: Upload to Release
       uses: softprops/action-gh-release@v2
       with:
-        files: aseprite-windows.zip
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        files: dist/*.zip
