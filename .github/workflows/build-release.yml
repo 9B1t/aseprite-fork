@@ -6,109 +6,57 @@ on:
       - "v*"
 
 jobs:
-  build:
-    runs-on: ${{ matrix.os }}
+  release:
+    runs-on: windows-latest
     timeout-minutes: 40
-
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, ubuntu-latest]
-        build_type: [RelWithDebInfo]
-        ui: [gui]
-        scripting: [lua]
 
     steps:
     - uses: actions/checkout@v4
       with:
         submodules: 'recursive'
 
-    # Linux dependencies
-    - name: Install Dependencies
-      if: runner.os == 'Linux'
-      shell: bash
-      run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y \
-          libpixman-1-dev libfreetype6-dev libharfbuzz-dev zlib1g-dev \
-          libx11-dev libxcursor-dev libxi-dev libxrandr-dev libgl1-mesa-dev \
-          libfontconfig1-dev zip
-
-    # Install Skia
     - name: Install Skia
       shell: bash
       run: |
-        if [[ "${{ runner.os }}" == "Windows" ]] ; then
-          this_dir=$(cygpath "${{ github.workspace }}")
-        else
-          this_dir="${{ github.workspace }}"
-        fi
-
+        this_dir=$(cygpath "${{ github.workspace }}")
         skia_url=$(source $this_dir/laf/misc/skia-url.sh | xargs)
         skia_file=$(basename $skia_url)
 
         curl --ssl-revoke-best-effort -L -o "$skia_file" "$skia_url"
         unzip "$skia_file" -d skia
 
-    - name: ccache
-      uses: hendrikmuhs/ccache-action@v1.2.17
-      with:
-        key: ${{ matrix.os }}-${{ matrix.build_type }}
-
     - uses: aseprite/get-ninja@main
 
     - uses: ilammy/msvc-dev-cmd@v1
-      if: runner.os == 'Windows'
 
-    # Configure
     - name: Generating Makefiles
       shell: bash
       run: |
-        export enable_ccache=on
-        export laf_backend=skia
-        export enable_scripting=on
-
-        if [[ "${{ runner.os }}" == "macOS" ]] ; then
-          export skia_arch=arm64
-        else
-          export skia_arch=x64
-        fi
-
         cmake -S . -B build -G Ninja \
-          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
           -DENABLE_TESTS=OFF \
           -DENABLE_SCRIPTING=ON \
-          -DENABLE_CCACHE=$enable_ccache \
-          -DLAF_BACKEND=$laf_backend \
+          -DENABLE_CCACHE=OFF \
+          -DLAF_BACKEND=skia \
           -DSKIA_DIR=$(realpath skia) \
-          -DSKIA_LIBRARY_DIR=$(realpath skia/out/Release-$skia_arch)
+          -DSKIA_LIBRARY_DIR=$(realpath skia/out/Release-x64)
 
-    # Build
     - name: Build
       shell: bash
       run: |
-        cd build && ninja
+        cd build
+        ninja
 
-    # Package (NEW)
     - name: Package
       shell: bash
       run: |
-        mkdir -p release
+        mkdir release
+        cp build/bin/aseprite.exe release/
+        7z a aseprite-windows.zip release/*
 
-        if [[ "${{ runner.os }}" == "Windows" ]]; then
-          cp -r build/bin/aseprite.exe release/
-          7z a aseprite-windows.zip release/*
-        else
-          cp -r build/bin/aseprite release/
-          zip -r aseprite-linux.zip release
-        fi
-
-    # Upload to Release (NO artifact)
-    - name: Upload Release Assets
+    - name: Upload to GitHub Release
       uses: softprops/action-gh-release@v2
       with:
-        files: |
-          aseprite-windows.zip
-          aseprite-linux.zip
+        files: aseprite-windows.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
